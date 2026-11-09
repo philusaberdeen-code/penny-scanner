@@ -1,0 +1,86 @@
+name: Penny scanner
+
+# Times are UTC. US premarket opens 08:00 UTC (summer) / 09:00 UTC (winter) and
+# after-hours ends 00:00 / 01:00 UTC. The script itself checks the real US session
+# (including holidays and clock changes) and exits straight away when closed.
+on:
+  schedule:
+    - cron: "*/10 8-23 * * 1-5"   # Mon–Fri premarket → evening
+    - cron: "*/10 0-1 * * 2-6"    # late after-hours (past midnight UTC)
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Just send a test alert to my phone"
+        type: boolean
+        default: false
+      force_session:
+        description: "Pretend the market is open (test outside hours)"
+        type: choice
+        options: [auto, premarket, regular, afterhours]
+        default: auto
+
+concurrency:
+  group: penny-scanner
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      # Optional tuning — set under Settings → Secrets and variables → Actions → Variables
+      MAX_PRICE: ${{ vars.MAX_PRICE }}
+      EXCHANGES: ${{ vars.EXCHANGES }}
+      PARABOLIC_SCORE: ${{ vars.PARABOLIC_SCORE }}
+      MIN_DAY_GAIN: ${{ vars.MIN_DAY_GAIN }}
+      MIN_15M_GAIN_REGULAR: ${{ vars.MIN_15M_GAIN_REGULAR }}
+      MIN_15M_GAIN_EXTENDED: ${{ vars.MIN_15M_GAIN_EXTENDED }}
+      MIN_DOLLAR_VOL_15M_REGULAR: ${{ vars.MIN_DOLLAR_VOL_15M_REGULAR }}
+      MIN_DOLLAR_VOL_15M_EXTENDED: ${{ vars.MIN_DOLLAR_VOL_15M_EXTENDED }}
+      BLACK_SWAN_SIGMA: ${{ vars.BLACK_SWAN_SIGMA }}
+      CRASH_DAY_DROP: ${{ vars.CRASH_DAY_DROP }}
+      CATALYST_MIN_WEIGHT: ${{ vars.CATALYST_MIN_WEIGHT }}
+      ALERT_COOLDOWN_MIN: ${{ vars.ALERT_COOLDOWN_MIN }}
+      CYCLE_SECONDS: ${{ vars.CYCLE_SECONDS }}
+      HEARTBEAT: ${{ vars.HEARTBEAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore scanner memory (stops repeat alerts between runs)
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: scanner-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: scanner-state-
+
+      - name: Scan
+        run: |
+          ARGS="--duration 560"
+          if [ "${{ inputs.test_alert }}" = "true" ]; then
+            ARGS="--test-alert"
+          elif [ -n "${{ inputs.force_session }}" ] && [ "${{ inputs.force_session }}" != "auto" ]; then
+            ARGS="--session ${{ inputs.force_session }} --once"
+          fi
+          python scanner.py $ARGS
+
+      - name: Save scanner memory
+        if: always() && hashFiles('state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: scanner-state-${{ github.run_id }}-${{ github.run_attempt }}
