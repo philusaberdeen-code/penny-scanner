@@ -363,5 +363,31 @@ class TestEndToEnd(unittest.TestCase):
             self.assertEqual(len(http.sent), n)
 
 
+class TestTelegramChatDiscovery(unittest.TestCase):
+    def test_finds_and_remembers_chat_id(self):
+        class TG(FakeHttp):
+            calls = 0
+
+            def get_json(self, url, params=None, headers=None, source="web", timeout=20):
+                if "getUpdates" in url:
+                    TG.calls += 1
+                    return {"ok": True, "result": [{"update_id": 1, "message": {"chat": {"id": 7123456789}, "text": "hi"}}]}
+                return super().get_json(url, params, headers, source, timeout)
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "state.json"
+            cfg = S.Config()
+            cfg.telegram_token, cfg.telegram_chat = "T", ""
+            S.resolve_telegram_chat(cfg, TG(), p)
+            self.assertEqual(cfg.telegram_chat, "7123456789")
+            st = S.State(p)                      # scanner state keeps it
+            st.save()
+            cfg2 = S.Config()
+            cfg2.telegram_token, cfg2.telegram_chat = "T", ""
+            S.resolve_telegram_chat(cfg2, TG(), p)
+            self.assertEqual(cfg2.telegram_chat, "7123456789")
+            self.assertEqual(TG.calls, 1)        # second time read from saved state
+
+
 if __name__ == "__main__":
     unittest.main()

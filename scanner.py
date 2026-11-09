@@ -1171,6 +1171,38 @@ class Scanner:
 # ─────────────────────────────── main ──────────────────────────────────
 
 
+def resolve_telegram_chat(cfg: Config, http: Http, state_path: Path) -> None:
+    """If TELEGRAM_CHAT_ID isn't set, find it from the latest message sent to the bot
+    and remember it in the state file (Telegram only keeps unread messages for 24h)."""
+    if not cfg.telegram_token or cfg.telegram_chat:
+        return
+    saved = {}
+    if state_path.exists():
+        try:
+            saved = json.loads(state_path.read_text())
+        except (ValueError, OSError):
+            saved = {}
+    if saved.get("telegram_chat"):
+        cfg.telegram_chat = str(saved["telegram_chat"])
+        return
+    data = http.get_json(f"https://api.telegram.org/bot{cfg.telegram_token}/getUpdates", source="telegram")
+    if data is None:
+        log.warning("Telegram rejected the bot token — check TELEGRAM_BOT_TOKEN (use the latest from @BotFather).")
+        return
+    for upd in reversed(data.get("result") or []):
+        for key in ("message", "edited_message", "my_chat_member", "channel_post"):
+            chat = (upd.get(key) or {}).get("chat") or {}
+            if chat.get("id"):
+                cfg.telegram_chat = str(chat["id"])
+                saved["telegram_chat"] = cfg.telegram_chat
+                state_path.write_text(json.dumps(saved, separators=(",", ":")))
+                log.info("Found your Telegram chat ID: %s (optionally save it as the TELEGRAM_CHAT_ID secret)",
+                         cfg.telegram_chat)
+                return
+    log.warning("No chat ID yet: open your bot in Telegram, send it any message, then run again.")
+
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Sub-$1 parabolic / catalyst / black-swan scanner")
     ap.add_argument("--duration", type=int, default=560, help="seconds to keep scanning (default 560)")
@@ -1187,6 +1219,7 @@ def main(argv=None) -> int:
     cfg = Config()
     cfg.forced_session = args.session
     http = Http()
+    resolve_telegram_chat(cfg, http, Path(args.state))
     notifier = Notifier(cfg, http)
 
     if args.test_alert:
