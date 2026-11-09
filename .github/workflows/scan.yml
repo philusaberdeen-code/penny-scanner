@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 15
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.BSWANPARA_BOT }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || '8111178024' }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
