@@ -51,6 +51,16 @@ jobs:
       ALERT_COOLDOWN_MIN: ${{ vars.ALERT_COOLDOWN_MIN }}
       CYCLE_SECONDS: ${{ vars.CYCLE_SECONDS }}
       HEARTBEAT: ${{ vars.HEARTBEAT }}
+      TRADE_SIGNALS: ${{ vars.TRADE_SIGNALS }}
+      RISK_PER_TRADE: ${{ vars.RISK_PER_TRADE }}
+      MAX_RISK_PCT: ${{ vars.MAX_RISK_PCT }}
+      TARGET1_R: ${{ vars.TARGET1_R }}
+      TARGET2_R: ${{ vars.TARGET2_R }}
+      TRAIL_PCT: ${{ vars.TRAIL_PCT }}
+      MAX_SPREAD: ${{ vars.MAX_SPREAD }}
+      TIME_STOP_MIN: ${{ vars.TIME_STOP_MIN }}
+      RUNNER_SCORE: ${{ vars.RUNNER_SCORE }}
+      RUNNER_ALERTS: ${{ vars.RUNNER_ALERTS }}
     steps:
       - uses: actions/checkout@v4
 

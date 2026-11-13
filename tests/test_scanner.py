@@ -65,7 +65,7 @@ def crash_bars():
 
 
 UNIVERSE = {"data": {"rows": [
-    {"symbol": "ROKT", "name": "Rocket Bio Inc. Common Stock", "lastsale": "$0.40", "netchange": "-0.01", "pctchange": "-2%", "volume": "1,200,000"},
+    {"symbol": "ROKT", "name": "Rocket Bio Inc. Common Stock", "lastsale": "$0.40", "netchange": "-0.01", "pctchange": "-2%", "volume": "1,200,000", "marketCap": "6,000,000"},
     {"symbol": "FLAT", "name": "Flatline Corp Common Stock", "lastsale": "$0.55", "netchange": "UNCH", "pctchange": "0%", "volume": "300,000"},
     {"symbol": "DOWN", "name": "Downhill Holdings Common Stock", "lastsale": "$0.80", "netchange": "0.02", "pctchange": "2%", "volume": "900,000"},
     {"symbol": "BIGC", "name": "Big Cap Co Common Stock", "lastsale": "$45.10", "netchange": "0.5", "pctchange": "1%", "volume": "9,000,000"},
@@ -391,3 +391,158 @@ class TestTelegramChatDiscovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ───────────────────────── buy / sell signals ─────────────────────────
+
+def flag_bars(break_out=True):
+    """$0.40 → run to $0.80 (07:30–07:55), orderly pullback to ~$0.70 on light volume, then breakout."""
+    bars, t = [], et(2026, 11, 9, 4, 0)
+    end = et(2026, 11, 9, 8, 11)
+    prev = 0.42
+    while t <= end:
+        m = (t - et(2026, 11, 9, 7, 30)) / 60
+        if m < 0:
+            p, v = 0.42, 3_000
+        elif m <= 25:
+            p, v = 0.42 + (0.80 - 0.42) * (m / 25), 120_000
+        elif m <= 40:
+            p, v = 0.80 - 0.10 * ((m - 25) / 15), 30_000          # pullback to 0.70
+        else:
+            p, v = (0.83 if break_out else 0.705), (150_000 if break_out else 20_000)
+        h = max(prev, p) * 1.002
+        lo = min(prev, p) * 0.998
+        bars.append((int(t), prev, h, lo, p, v))
+        prev = p
+        t += 60
+    return bars
+
+
+def series_from(bars, prev=0.40, sym="FLAG"):
+    return S.parse_chart_result(chart_json(sym, prev, bars)["chart"]["result"][0])
+
+
+class TestTradeSignals(unittest.TestCase):
+    def setUp(self):
+        self.cfg = S.Config()
+
+    def test_pullback_breakout_buy(self):
+        s = series_from(flag_bars())
+        a = S.analyze(s, 0.40)
+        st = S.find_buy_setup(s, a, self.cfg)
+        self.assertIsNotNone(st)
+        self.assertEqual(st.name, "Pullback breakout")
+        self.assertAlmostEqual(st.entry, 0.83, places=3)
+        self.assertLess(st.stop, 0.70)
+        self.assertGreater(st.t1, st.entry)
+        self.assertGreater(st.t2, st.t1)
+
+    def test_no_buy_without_breakout(self):
+        s = series_from(flag_bars(break_out=False))
+        self.assertIsNone(S.find_buy_setup(s, S.analyze(s, 0.40), self.cfg))
+
+    def test_no_buy_into_vertical_spike(self):
+        s = series_from(parabolic_bars(), sym="ROKT")
+        self.assertIsNone(S.find_buy_setup(s, S.analyze(s, 0.40), self.cfg))
+
+    def _exit(self, tr, price, now_off=600):
+        base = flag_bars()
+        t_last = base[-1][0]
+        bars = base + [(t_last + 60, base[-1][4], max(price, base[-1][4]), min(price, base[-1][4]), price, 50_000)]
+        s = series_from(bars)
+        a = S.analyze(s, 0.40)
+        return S.check_exit(tr, s, a, self.cfg, tr["ts"] + now_off)
+
+    def new_trade(self):
+        t_entry = flag_bars()[-1][0]
+        return {"d": "2026-11-09", "ts": t_entry, "open": True, "setup": "Pullback breakout", "entry": 0.83,
+                "stop": 0.686, "t1": 1.118, "t2": 1.262, "high": 0.83}
+
+    def test_stop_hit(self):
+        kind, reason, closes = self._exit(self.new_trade(), 0.66)
+        self.assertEqual((kind, closes), ("STOP", True))
+
+    def test_target1_then_breakeven(self):
+        tr = self.new_trade()
+        kind, reason, closes = self._exit(tr, 1.13)
+        self.assertEqual((kind, closes), ("TRIM", False))
+        self.assertEqual(tr["stop"], 0.83)          # moved to breakeven
+        kind, reason, closes = self._exit(tr, 0.82)
+        self.assertEqual((kind, closes), ("SELL", True))
+
+    def test_trailing_stop_after_target(self):
+        tr = self.new_trade()
+        tr.update(t1_hit=True, stop=0.83, high=1.20)
+        kind, reason, closes = self._exit(tr, 1.03)   # >12% off the 1.20 high
+        self.assertEqual((kind, closes), ("SELL", True))
+        self.assertIn("Trailing", reason)
+
+    def test_time_stop(self):
+        tr = self.new_trade()
+        kind, reason, closes = self._exit(tr, 0.80, now_off=50 * 60)
+        self.assertEqual((kind, closes), ("SELL", True))
+        self.assertIn("Time stop", reason)
+
+    def test_end_to_end_buy_then_sell(self):
+        with tempfile.TemporaryDirectory() as d:
+            http = FakeHttp()
+            http.charts["ROKT"] = chart_json("ROKT", 0.40, flag_bars())
+            t_buy = flag_bars()[-1][0]
+            sc, http, st = make_scanner(http, d, clock=t_buy + 30)
+            sc.load_universe()
+            alerts = sc.cycle()
+            buys = [a for a in alerts if a.kind == "BUY"]
+            self.assertEqual([a.symbol for a in buys], ["ROKT"])
+            self.assertTrue(st.d["trades"]["ROKT"]["open"])
+            print("\n--- buy alert ---")
+            for line in [buys[0].title] + buys[0].lines:
+                print("   ", line)
+            # price collapses through the stop → STOP alert
+            bars = flag_bars() + [(t_buy + 60, 0.83, 0.83, 0.64, 0.65, 90_000)]
+            http.charts["ROKT"] = chart_json("ROKT", 0.40, bars)
+            sc.clock = lambda: t_buy + 120
+            alerts = sc.cycle()
+            stops = [a for a in alerts if a.kind == "STOP"]
+            self.assertEqual([a.symbol for a in stops], ["ROKT"])
+            self.assertFalse(st.d["trades"]["ROKT"]["open"])
+            print("--- stop alert ---")
+            for line in [stops[0].title] + stops[0].lines:
+                print("   ", line)
+            # no immediate re-buy during cooldown
+            http.charts["ROKT"] = chart_json("ROKT", 0.40, flag_bars())
+            self.assertFalse([a for a in sc.cycle() if a.kind == "BUY"])
+
+
+class TestRunnerPotential(unittest.TestCase):
+    def test_score_favours_small_cap_catalyst_runner(self):
+        s = series_from(flag_bars())
+        a = S.analyze(s, 0.40)
+        cats = [{"kind": "bullish", "w": 5, "title": "FDA approval", "src": "GNW", "ts": NOW - 600}]
+        small = {"last": 0.40, "mcap": 6e6}
+        big = {"last": 0.40, "mcap": 400e6}
+        hi, why = S.runner_score(a, small, {"avgvol": 300_000}, cats, "premarket", NOW)
+        lo, _ = S.runner_score(a, big, {"avgvol": 30_000_000}, [], "premarket", NOW)
+        self.assertGreaterEqual(hi, 80)
+        self.assertLess(lo, 50)
+        self.assertTrue(any("mcap" in w for w in why))
+        diluted, _ = S.runner_score(a, small, {"avgvol": 300_000},
+                                    cats + [{"kind": "bearish", "w": 3, "title": "offering", "src": "x", "ts": NOW}],
+                                    "premarket", NOW)
+        self.assertLess(diluted, hi)
+
+    def test_runner_alert_fires_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            http = FakeHttp()
+            # early runner: +40%, trending, above VWAP
+            bars, t, prev = [], et(2026, 11, 9, 4, 0), 0.40
+            while t <= et(2026, 11, 9, 7, 0):
+                m = (t - et(2026, 11, 9, 6, 30)) / 60
+                p, v = (0.40, 2_000) if m < 0 else (0.40 * (1 + 0.40 * m / 30), 80_000)
+                bars.append((int(t), prev, max(p, prev) * 1.002, min(p, prev) * 0.998, p, v))
+                prev, t = p, t + 60
+            http.charts["ROKT"] = chart_json("ROKT", 0.40, bars)
+            sc, http, st = make_scanner(http, d, clock=et(2026, 11, 9, 7, 0, 30))
+            sc.load_universe()
+            kinds = [(a.kind, a.symbol) for a in sc.cycle()]
+            self.assertIn(("RUNNER", "ROKT"), kinds)
+            self.assertNotIn(("RUNNER", "ROKT"), [(a.kind, a.symbol) for a in sc.cycle()])
